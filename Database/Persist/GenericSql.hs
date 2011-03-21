@@ -75,7 +75,6 @@ instance MonadPeelIO m => PersistBackend (SqlPersist m) where
                         return i
         return $ toPersistKey i
       where
-        fst3 (x, _, _) = x
         t = entityDef val
         vals = map toPersistValue $ toPersistFields val
 
@@ -93,13 +92,12 @@ instance MonadPeelIO m => PersistBackend (SqlPersist m) where
                        ++ [PersistInt64 $ fromPersistKey k]
       where
         go conn x = escapeName conn x ++ "=?"
-        fst3 (x, _, _) = x
 
     get k = do
         conn <- SqlPersist ask
         let t = entityDef $ dummyFromKey k
         let cols = intercalate ","
-                 $ map (\(x, _, _) -> escapeName conn x) $ tableColumns t
+                 $ map (escapeName conn . fst3) $ tableColumns t
         let sql = concat
                 [ "SELECT "
                 , cols
@@ -152,8 +150,13 @@ instance MonadPeelIO m => PersistBackend (SqlPersist m) where
                             loop step pop
         loop step _ = return step
         t = entityDef $ dummyFromFilts filts
+        tname conn = escapeName conn $ rawTableName t
+        joins = concat . map persistFilterToJoins $ filts
+        joinTables conn = map (someEntityName conn . fst . snd) joins
+        someEntityName conn (SomePersistEntity v) = 
+          escapeName conn . rawTableName $ entityDef v
         orderClause conn o =
-            escapeName conn (getFieldName t $ persistOrderToFieldName o)
+            getFieldFullName conn (persistOrderToField o)
                         ++ case persistOrderToOrder o of
                                             Asc -> ""
                                             Desc -> " DESC"
@@ -162,6 +165,12 @@ instance MonadPeelIO m => PersistBackend (SqlPersist m) where
                 Left e -> Left e
                 Right xs' -> Right (toPersistKey x, xs')
         fromPersistValues' _ = Left "error in fromPersistValues'"
+        joi conn = if null joins
+                    then ""
+                    else " INNER JOIN " ++
+                         intercalate "," (joinTables conn) ++
+                         " ON " ++
+                         intercalate " AND " (map (joinFilterClause conn) joins)
         wher conn = if null filts
                     then ""
                     else " WHERE " ++
@@ -177,13 +186,15 @@ instance MonadPeelIO m => PersistBackend (SqlPersist m) where
         off = if offset == 0
                     then ""
                     else " OFFSET " ++ show offset
-        cols conn = intercalate "," $ "id"
-                   : (map (\(x, _, _) -> escapeName conn x) $ tableColumns t)
+        cols conn = intercalate "," (map (go conn) cols')
+        go conn x = tname conn ++ "." ++ (escapeName conn $ fst3 x)
+        cols' = ((RawName "id", undefined, undefined) : tableColumns t)
         sql conn = concat
             [ "SELECT "
             , cols conn
             , " FROM "
-            , escapeName conn $ rawTableName t
+            , tname conn
+            , joi conn
             , wher conn
             , ord conn
             , lim conn
@@ -248,13 +259,13 @@ instance MonadPeelIO m => PersistBackend (SqlPersist m) where
         execute' (sql conn) $ persistUniqueToValues uniq
       where
         t = entityDef $ dummyFromUnique uniq
-        go = map (getFieldName t) . persistUniqueToFieldNames
-        go' conn x = escapeName conn x ++ "=?"
+        go conn = map (getFieldName conn t) . persistUniqueToFieldNames
+        go' x = x ++ "=?"
         sql conn = concat
             [ "DELETE FROM "
             , escapeName conn $ rawTableName t
             , " WHERE "
-            , intercalate " AND " $ map (go' conn) $ go uniq
+            , intercalate " AND " $ map go' $ go conn uniq
             ]
 
     update _ [] = return ()
@@ -265,19 +276,19 @@ instance MonadPeelIO m => PersistBackend (SqlPersist m) where
             go'' n Subtract = n ++ '=' : n ++ "-?"
             go'' n Multiply = n ++ '=' : n ++ "*?"
             go'' n Divide = n ++ '=' : n ++ "/?"
-        let go' (x, pu) = go'' (escapeName conn x) pu
+        let go' (x, pu) = go'' x pu
         let sql = concat
                 [ "UPDATE "
                 , escapeName conn $ rawTableName t
                 , " SET "
-                , intercalate "," $ map (go' . go) upds
+                , intercalate "," $ map (go' . go conn) upds
                 , " WHERE id=?"
                 ]
         execute' sql $
             map persistUpdateToValue upds ++ [PersistInt64 $ fromPersistKey k]
       where
         t = entityDef $ dummyFromKey k
-        go x = ( getFieldName t $ persistUpdateToFieldName x
+        go conn x = ( getFieldName conn t (persistUpdateToFieldName x)
                , persistUpdateToUpdate x
                )
 
@@ -292,7 +303,7 @@ instance MonadPeelIO m => PersistBackend (SqlPersist m) where
                 [ "UPDATE "
                 , escapeName conn $ rawTableName t
                 , " SET "
-                , intercalate "," $ map (go' conn . go) upds
+                , intercalate "," $ map (go' . go conn) upds
                 , wher
                 ]
         let dat = map persistUpdateToValue upds ++ getFiltsValues filts
@@ -304,15 +315,15 @@ instance MonadPeelIO m => PersistBackend (SqlPersist m) where
         go'' n Subtract = n ++ '=' : n ++ "-?"
         go'' n Multiply = n ++ '=' : n ++ "*?"
         go'' n Divide = n ++ '=' : n ++ "/?"
-        go' conn (x, pu) = go'' (escapeName conn x) pu
-        go x = ( getFieldName t $ persistUpdateToFieldName x
+        go' (x, pu) = go'' x pu
+        go conn x = ( getFieldName conn t (persistUpdateToFieldName x)
                , persistUpdateToUpdate x
                )
 
     getBy uniq = do
         conn <- SqlPersist ask
         let cols = intercalate "," $ "id"
-                 : (map (\(x, _, _) -> escapeName conn x) $ tableColumns t)
+                 : (map (escapeName conn . fst3) $ tableColumns t)
         let sql = concat
                 [ "SELECT "
                 , cols
@@ -332,16 +343,21 @@ instance MonadPeelIO m => PersistBackend (SqlPersist m) where
                 Just _ -> error "Database.Persist.GenericSql: Bad list in getBy"
       where
         sqlClause conn =
-            intercalate " AND " $ map (go conn) $ toFieldNames' uniq
-        go conn x = escapeName conn x ++ "=?"
+            intercalate " AND " $ map go $ (toFieldNames' conn) uniq
+        go x = x ++ "=?"
         t = entityDef $ dummyFromUnique uniq
-        toFieldNames' = map (getFieldName t) . persistUniqueToFieldNames
+        toFieldNames' conn = map (getFieldName conn t) . persistUniqueToFieldNames
 
 dummyFromUnique :: Unique v -> v
 dummyFromUnique _ = error "dummyFromUnique"
 
-getFieldName :: EntityDef -> String -> RawName
-getFieldName t s = rawFieldName $ tableColumn t s
+getFieldName :: Connection -> EntityDef -> String -> String
+getFieldName conn t s = escapeName conn $ rawFieldName $ tableColumn t s
+
+getFieldFullName :: Connection -> (EntityDef, String) -> String
+getFieldFullName conn (t, s) = tableName ++ "." ++ fieldName
+  where tableName = escapeName conn $ rawTableName t
+        fieldName = getFieldName conn t s
 
 tableColumn :: EntityDef -> String -> (String, String, [String])
 tableColumn t s = go $ entityColumns t
@@ -403,8 +419,7 @@ filterClause conn f =
     isNull = any (== PersistNull)
            $ either return id
            $ persistFilterToValue f
-    t = entityDef $ dummyFromFilts [f]
-    name = escapeName conn $ getFieldName t $ persistFilterToFieldName f
+    name = getFieldFullName conn (persistFilterToField f)
     qmarks = case persistFilterToValue f of
                 Left _ -> "?"
                 Right x ->
@@ -421,6 +436,14 @@ filterClause conn f =
     showSqlFilter Le = "<="
     showSqlFilter In = " IN "
     showSqlFilter NotIn = " NOT IN "
+
+joinFilterClause 
+  :: Connection
+  -> ((SomePersistEntity, String), (SomePersistEntity, String))
+  -> String
+joinFilterClause conn (a, b) =
+  name b ++ "=" ++ name a
+    where name (SomePersistEntity v, s) = escapeName conn (rawTableName $ entityDef v) ++ "." ++ escapeName conn (RawName s)
 
 dummyFromFilts :: [Filter v] -> v
 dummyFromFilts _ = error "dummyFromFilts"
@@ -519,3 +542,6 @@ getFiltsValues =
     go (Left PersistNull) = []
     go (Left x) = [x]
     go (Right xs) = filter (/= PersistNull) xs
+
+fst3 :: (a, b, c) -> a
+fst3 (x, _, _) = x

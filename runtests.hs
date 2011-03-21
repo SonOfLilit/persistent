@@ -52,21 +52,13 @@ share2 mkPersist (mkMigrate "testMigrate") [$persist|
 
   Person
     name String update Eq Ne Desc
-    age Int update "Asc" Desc Lt "some ignored -- attribute" Eq Add
+    age Int Update "Asc" Desc Lt "some ignored -- attribute" Eq Add
     color String Maybe Eq Ne -- this is a comment sql=foobarbaz
     PersonNameKey name -- this is a comment sql=foobarbaz
   Pet
-    owner PersonId
-    name String
+    owner PersonId Foreign
+    nick String Eq Ne
     type PetType
-  NeedsPet
-    pet PetId
-  Number
-    int Int
-    int32 Int32
-    word32 Word32
-    int64 Int64
-    word64 Word64
 |]
 
 -- connstr = "user=test password=test host=localhost port=5432 dbname=yesod_test"
@@ -87,7 +79,7 @@ cleanDB :: SqlPersist IO ()
 cleanDB = do
   deleteWhere ([] :: [Filter Pet])
   deleteWhere ([] :: [Filter Person])
-  deleteWhere ([] :: [Filter Number])
+--  deleteWhere ([] :: [Filter Number])
 
 setup :: SqlPersist IO ()
 setup = do
@@ -111,10 +103,11 @@ testSuite = testGroup "Database.Persistent"
     , testCase "sqlite update" case_sqliteUpdate
     , testCase "sqlite updateWhere" case_sqliteUpdateWhere
     , testCase "sqlite selectList" case_sqliteSelectList
-    , testCase "large numbers" case_largeNumbers
+--    , testCase "large numbers" case_largeNumbers
     , testCase "insertBy" case_insertBy
     , testCase "derivePersistField" case_derivePersistField
     , testCase "afterException" case_afterException
+    , testCase "join" case_join
     ]
 
                           
@@ -130,10 +123,11 @@ case_sqliteUpdate = sqliteTest _update
 case_sqliteUpdateWhere = sqliteTest _updateWhere
 case_sqliteSelectList = sqliteTest _selectList
 case_sqlitePersistent = sqliteTest _persistent
-case_largeNumbers = sqliteTest _largeNumbers
+--case_largeNumbers = sqliteTest _largeNumbers
 case_insertBy = sqliteTest _insertBy
 case_derivePersistField = sqliteTest _derivePersistField
 case_afterException = sqliteTest _afterException
+case_join = sqliteTest _join
 
 _deleteWhere = do
   key2 <- insert $ Person "Michael2" 90 Nothing
@@ -307,6 +301,7 @@ _persistent = do
   Nothing <- get micK
   return ()
 
+{-
 _largeNumbers = do
     go $ Number maxBound 0 0 0 0
     go $ Number 0 maxBound 0 0 0
@@ -324,7 +319,7 @@ _largeNumbers = do
         xid <- insert x
         x' <- get xid
         liftIO $ x' @?= Just x
-
+-}
 _insertBy = do
     Right _ <- insertBy $ Person "name" 1 Nothing
     Left _ <- insertBy $ Person "name" 1 Nothing
@@ -348,3 +343,14 @@ _afterException = do
   where
     catcher :: Monad m => SomeException -> m ()
     catcher _ = return ()
+
+_join = do
+  a <- insert $ Person "Aur" 12 Nothing
+  b <- insert $ Person "Bar" 13 $ Just "Blue"
+  c <- insert $ Pet a "Mazal" Cat
+  d <- insert $ Pet b "Sasha" Dog
+  pets <- selectList [PetOwner $ PersonNameEq "Hanners"] [] 0 0
+  assertEmpty pets
+  pets <- selectList [PetOwner $ PersonNameEq "Aur"] [] 0 0
+  assertNotEmpty pets
+  return ()

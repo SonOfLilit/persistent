@@ -44,6 +44,7 @@ getStmt sql = do
 
 getStmt' :: Connection -> String -> IO Statement
 getStmt' conn sql = do
+    liftIO $ print sql
     smap <- liftIO $ readIORef $ stmtMap conn
     case Map.lookup sql smap of
         Just stmt -> return stmt
