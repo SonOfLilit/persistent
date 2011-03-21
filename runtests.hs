@@ -56,8 +56,8 @@ share2 mkPersist (mkMigrate "testMigrate") [$persist|
     color String Maybe Eq Ne -- this is a comment sql=foobarbaz
     PersonNameKey name -- this is a comment sql=foobarbaz
   Pet
-    owner PersonId
-    name String
+    owner PersonId Foreign
+    name String Eq Ne
     type PetType
   NeedsPet
     pet PetId
@@ -115,6 +115,7 @@ testSuite = testGroup "Database.Persistent"
     , testCase "insertBy" case_insertBy
     , testCase "derivePersistField" case_derivePersistField
     , testCase "afterException" case_afterException
+    , testCase "join" case_join
     ]
 
                           
@@ -134,6 +135,7 @@ case_largeNumbers = sqliteTest _largeNumbers
 case_insertBy = sqliteTest _insertBy
 case_derivePersistField = sqliteTest _derivePersistField
 case_afterException = sqliteTest _afterException
+case_join = sqliteTest _join
 
 _deleteWhere = do
   key2 <- insert $ Person "Michael2" 90 Nothing
@@ -348,3 +350,14 @@ _afterException = do
   where
     catcher :: Monad m => SomeException -> m ()
     catcher _ = return ()
+
+_join = do
+  a <- insert $ Person "Aur" 12 Nothing
+  b <- insert $ Person "Bar" 13 $ Just "Blue"
+  c <- insert $ Pet a "Mazal" Cat
+  d <- insert $ Pet b "Sasha" Dog
+  pets <- selectList [PetOwner $ PersonNameEq "Hanners"] [] 0 0
+  assertEmpty pets
+  pets <- selectList [PetOwner $ PersonNameEq "Aur"] [] 0 0
+  assertNotEmpty pets
+  return ()

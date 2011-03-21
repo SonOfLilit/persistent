@@ -98,7 +98,7 @@ entityFilters t = mapMaybe go' . concatMap go . entityColumns $ t
         case readMay sf of
             Nothing -> Nothing
             Just f ->
-              let constr = mkName $ entityName t ++ upperFirst n ++ show f
+              let constr = mkName $ entityName t ++ upperFirst n ++ showFilter f
                   ty' = pairToType (ty, nu && isNullableFilter f)
                   ty'' = if isFilterList f then ListT `AppT` ty' else ty'
               in Just $ FilterD constr n ty'' ty (ConT $ eName t) f
@@ -112,6 +112,11 @@ isNullableFilter Lt = False
 isNullableFilter Le = False
 isNullableFilter Gt = False
 isNullableFilter Ge = False
+isNullableFilter Foreign = True
+
+showFilter :: PersistFilter -> String
+showFilter Foreign = ""
+showFilter f = show f
 
 readMay :: Read a => String -> Maybe a
 readMay s =
@@ -125,6 +130,9 @@ isFilterList NotIn = True
 isFilterList _ = False
 
 mkFilter :: FilterD -> Con
+mkFilter FilterD {fName=constr, sfType=sty, fFilter=Foreign} =
+    NormalC constr [(NotStrict, ConT ''Filter `AppT` ty)]
+      where ty = unIdType sty
 mkFilter FilterD {fName=constr, fType=ty} =
     NormalC constr [(NotStrict, ty)]
 
@@ -274,9 +282,11 @@ mkUniqueToValues pairs = do
         let bod = ListE $ map (AppE tpv . VarE) xs
         return $ Clause [pat] (NormalB bod) []
 
-mkFilterToFieldName, mkFilterToFilter, mkFilterToValue,
+
+mkFilterToField, mkFilterToFieldName, mkFilterToFilter, mkFilterToValue,
+ mkFilterToJoins,
  mkUpdateToFieldName, mkUpdateToUpdate, mkUpdateToValue,
- mkOrderToFieldName, mkOrderToOrder
+ mkOrderToField, mkOrderToFieldName, mkOrderToOrder
  :: EntityDef -> Q Dec
 
 mkFilterToFieldName = mkFilterTo (mkName "persistFilterToFieldName") mkToFieldNameClause
@@ -289,6 +299,17 @@ mkOrderToFieldName = mkOrderTo (mkName "persistOrderToFieldName") mkToFieldNameC
 mkToFieldNameClause :: ToClause
 mkToFieldNameClause (constr, name, _) =
   Clause [RecP constr []] (NormalB $ LitE $ StringL name) []
+
+
+mkFilterToField = mkFilterTo (mkName "persistFilterToField") mkToFieldClause
+
+mkOrderToField = mkOrderTo (mkName "persistOrderToField") mkToFieldClause
+
+mkToFieldClause :: ToClause
+mkToFieldClause (constr, name, table) =
+  Clause [RecP constr []] (NormalB $ TupE [table', name']) []
+    where table' = VarE (mkName "entityDef") `AppE` (VarE (mkName "undefined") `SigE` table)
+          name' = LitE $ StringL name
 
 
 mkFilterToValue = 
@@ -311,6 +332,29 @@ mkToFiltValueClause FilterD {fName=constr, fFilter=flt} =
           v = VarE . mkName
 
 
+mkFilterToJoins t = mapM go filters >>= return . mkFunc func
+  where func = mkName "persistFilterToJoins"
+        go = mkFilterToJoinsClause func
+        filters = entityFilters t
+
+mkFilterToJoinsClause :: Name -> FilterD -> Q Clause
+mkFilterToJoinsClause func FilterD {fName=constr, ffName=name, sfType=joinedType, fEntityType=thisType, fFilter=Foreign} = do
+  spe <- [|SomePersistEntity|]
+  let body = InfixE (Just tuple) (ConE (mkName ":")) (Just call)
+      tuple = TupE [ TupE [ spe `AppE` dummy thisType
+                          , LitE $ StringL name]
+                   , TupE [ spe `AppE` dummy (unIdType joinedType)
+                          , LitE $ StringL "id"]]
+      call = VarE func `AppE` xE
+      dummy table = VarE (mkName "undefined") `SigE` table
+  return $ 
+    Clause [ConP constr [xP]]
+           (NormalB $ body)
+           []
+mkFilterToJoinsClause _ FilterD {} =
+  return $ Clause [WildP] (NormalB $ ListE []) []
+
+
 mkFilterTo' 
   :: Name
   -> (FilterD -> Q Clause)
@@ -318,8 +362,13 @@ mkFilterTo'
   -> Q Dec
 mkFilterTo' func clause t = do
   let filters = entityFilters t
-  clauses <- mapM clause filters
+      (ff, nf) = partition isForeign filters
+      fc = map (mkForeignClause func) ff
+  nc <- mapM clause nf
+  let clauses = (fc ++ nc)
   return $ mkFunc func clauses
+    where isForeign FilterD {fFilter=Foreign} = True
+          isForeign _ = False
           
 
 mkFilterTo :: Name -> ToClause -> EntityDef -> Q Dec
@@ -327,6 +376,10 @@ mkFilterTo name clause t = mkFilterTo' name clause' t
   where clause' FilterD {fName=constr, ffName=f, fEntityType=t} = 
           return $ clause (constr, f, t)
 
+
+mkForeignClause :: Name -> FilterD -> Clause
+mkForeignClause func FilterD {fName=constr} = 
+  Clause [ConP constr [xP]] (NormalB $ VarE func `AppE` xE) []
 
 mkUpdateTo :: Name -> ToClause -> EntityDef -> Q Dec
 mkUpdateTo func clause = return . mkFunc func . map (clause . go) . entityUpdates
@@ -421,6 +474,7 @@ mkEntity t = do
     show' <- [|show|]
     otd <- orderTypeDec t
     puk <- mkUniqueKeys t
+    otf <- mkOrderToField t
     otn <- mkOrderToFieldName t
     oto <- mkOrderToOrder t
     utf <- mkUpdateToFieldName t
@@ -428,6 +482,10 @@ mkEntity t = do
     putu <- mkUpdateToUpdate t
     ftn <- mkFilterToFieldName t
     ftv <- mkFilterToValue t
+    ftf <- mkFilterToField t
+    ftn <- mkFilterToFieldName t
+    ftv <- mkFilterToValue t
+    ftj <- mkFilterToJoins t
     return
       [ dataTypeDec t
       , TySynD (mkName $ entityName t ++ "Id") [] $
@@ -446,13 +504,16 @@ mkEntity t = do
         , FunD (mkName "toPersistKey") [Clause [] (NormalB fromIntegral') []]
         , FunD (mkName "fromPersistKey") [Clause [] (NormalB fromIntegral') []]
         , FunD (mkName "showPersistKey") [Clause [] (NormalB show') []]
+        , otf
         , otn
         , oto
         , utf
         , utv
         , putu
+        , ftf
         , ftn
         , ftv
+        , ftj
         , mkToFieldNames $ entityUniques t
         , uqtv
         , puk
@@ -631,6 +692,7 @@ instance Lift PersistFilter where
     lift Le = [|Le|]
     lift In = [|In|]
     lift NotIn = [|NotIn|]
+    lift Foreign = [|Foreign|]
 
 instance Lift PersistOrder where
     lift Asc = [|Asc|]
@@ -650,3 +712,6 @@ xP :: Pat
 xP = VarP (mkName "x")
 xE :: Exp
 xE = VarE (mkName "x")
+
+unIdType :: String -> Type
+unIdType s = ConT (mkName . reverse . drop 2 . reverse $ s)

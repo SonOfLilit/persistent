@@ -21,6 +21,7 @@ module Database.Persist.Base
     , PersistFilter (..)
     , PersistUpdate (..)
     , PersistOrder (..)
+    , SomePersistEntity (..)
     , SomePersistField (..)
     , selectList
     , insertBy
@@ -261,10 +262,14 @@ class PersistEntity val where
     fromPersistKey :: Key val -> Int64
     showPersistKey :: Key val -> String
 
+    persistFilterToField :: Filter val -> (EntityDef, String)
     persistFilterToFieldName :: Filter val -> String
     persistFilterToFilter :: Filter val -> PersistFilter
     persistFilterToValue :: Filter val -> Either PersistValue [PersistValue]
+    persistFilterToJoins :: Filter val -> [((SomePersistEntity, String)
+                                           ,(SomePersistEntity, String))]
 
+    persistOrderToField :: Order val -> (EntityDef, String)
     persistOrderToFieldName :: Order val -> String
     persistOrderToOrder :: Order val -> PersistOrder
 
@@ -275,6 +280,8 @@ class PersistEntity val where
     persistUniqueToFieldNames :: Unique val -> [String]
     persistUniqueToValues :: Unique val -> [PersistValue]
     persistUniqueKeys :: val -> [Unique val]
+
+data SomePersistEntity = forall a. PersistEntity a => SomePersistEntity a
 
 data SomePersistField = forall a. PersistField a => SomePersistField a
 instance PersistField SomePersistField where
@@ -384,7 +391,7 @@ data EntityDef = EntityDef
     }
     deriving Show
 
-data PersistFilter = Eq | Ne | Gt | Lt | Ge | Le | In | NotIn
+data PersistFilter = Eq | Ne | Gt | Lt | Ge | Le | In | NotIn | Foreign
     deriving (Read, Show)
 
 data PersistOrder = Asc | Desc

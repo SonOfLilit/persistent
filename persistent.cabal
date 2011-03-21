@@ -50,7 +50,9 @@ executable         runtests
                          test-framework-hunit,
                          base >= 4 && < 5,
                          template-haskell >= 2.4 && < 2.6,
-                         web-routes-quasi >= 0.6.0 && < 0.7
+                         web-routes-quasi >= 0.6.0 && < 0.7,
+                         HDBC             >= 2.2.6 && < 2.3,
+                         HDBC-postgresql  >= 2.2.3.1  && < 2.3
         if flag(test-postgresql)
             cpp-options: -DWITH_POSTGRESQL
     else
